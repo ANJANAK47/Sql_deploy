@@ -3,16 +3,13 @@ name: Auto-batch SQL (diff-based)
 on:
   push:
     branches: [ main ]
-    paths:
-      - '**/*.sql'          # react only to SQL changes
-    paths-ignore:
-      - 'releases/sql/**'   # don't run on merges that only add batch folders
   workflow_dispatch: {}
 
 permissions:
   contents: write
   pull-requests: write
 
+# Prevent two runs from racing the same next number
 concurrency:
   group: auto-batch-numbering
   cancel-in-progress: false
@@ -36,14 +33,14 @@ jobs:
           LAST_BATCH_COMMIT=$(git log -1 --format=%H -- "$RELEASES_DIR" || true)
           echo "last=$LAST_BATCH_COMMIT" >> "$GITHUB_OUTPUT"
 
-      - name: Determine changed .sql files since last batch
+      - name: Determine changed .sql files since last batch (exclude releases/)
         id: changed
         run: |
           if [ -n "${{ steps.lastbatch.outputs.last }}" ]; then
             git diff --name-only ${{ steps.lastbatch.outputs.last }}..HEAD -- '**/*.sql' \
               | grep -v '^releases/sql/' | sort > changed.txt || true
           else
-            # First batch: include all tracked SQLs (outside releases/)
+            # First batch: include all tracked SQLs outside releases/
             git ls-files '**/*.sql' | grep -v '^releases/sql/' | sort > changed.txt || true
           fi
           echo "Changed files:"; cat changed.txt || true
@@ -66,7 +63,10 @@ jobs:
           if [ -z "$LAST" ]; then NEXT=1; else NEXT=$((10#$LAST + 1)); fi
           printf "num=%03d\n" "$NEXT" >> "$GITHUB_OUTPUT"
 
-      - name: Create batch folder and COPY changed files (flat layout)
+      # Copy with FLAT layout; if you prefer to preserve subpaths,
+      # replace cp "$f" "$BATCH_DIR/$(basename "$f")" with:
+      # mkdir -p "$BATCH_DIR/$(dirname "$f")"; cp "$f" "$BATCH_DIR/$f"
+      - name: Create batch folder and COPY changed files (flat)
         if: steps.check.outputs.has_changes == 'true'
         id: batch
         run: |
@@ -76,15 +76,11 @@ jobs:
           mkdir -p "$BATCH_DIR"
           while IFS= read -r f; do
             [ -z "$f" ] && continue
-            case "$f" in
-              $RELEASES_DIR/*) continue ;;   # skip previous batches
-            esac
             cp "$f" "$BATCH_DIR/$(basename "$f")"
           done < changed.txt
           echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
           echo "dir=$BATCH_DIR"   >> "$GITHUB_OUTPUT"
-          echo "Created $BATCH_DIR:"
-          find "$BATCH_DIR" -type f -name '*.sql' | sort
+          echo "Created $BATCH_DIR:"; ls -1 "$BATCH_DIR" || true
 
       - name: Open Pull Request
         if: steps.check.outputs.has_changes == 'true'
