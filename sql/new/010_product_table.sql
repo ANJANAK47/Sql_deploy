@@ -7,4 +7,4 @@ price int
 )
 
 select*from product
-drop table product
+drop table product-- trigger 
