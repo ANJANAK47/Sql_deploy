@@ -4,9 +4,9 @@ on:
   push:
     branches: [ main ]
     paths:
-      - '**/*.sql'          # react to SQL changes
+      - '**/*.sql'          # react only to SQL changes
     paths-ignore:
-      - 'releases/sql/**'   # ignore merges that only add batch folders
+      - 'releases/sql/**'   # don't run on merges that only add batch folders
   workflow_dispatch: {}
 
 permissions:
@@ -66,7 +66,7 @@ jobs:
           if [ -z "$LAST" ]; then NEXT=1; else NEXT=$((10#$LAST + 1)); fi
           printf "num=%03d\n" "$NEXT" >> "$GITHUB_OUTPUT"
 
-      - name: Create batch folder and COPY changed files (preserve paths)
+      - name: Create batch folder and COPY changed files (flat layout)
         if: steps.check.outputs.has_changes == 'true'
         id: batch
         run: |
@@ -79,8 +79,7 @@ jobs:
             case "$f" in
               $RELEASES_DIR/*) continue ;;   # skip previous batches
             esac
-            mkdir -p "$BATCH_DIR/$(dirname "$f")"
-            cp "$f" "$BATCH_DIR/$f"
+            cp "$f" "$BATCH_DIR/$(basename "$f")"
           done < changed.txt
           echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
           echo "dir=$BATCH_DIR"   >> "$GITHUB_OUTPUT"
@@ -100,4 +99,3 @@ jobs:
             Files copied into `${{ steps.batch.outputs.dir }}`.
           labels: sql
           delete-branch: true
-
