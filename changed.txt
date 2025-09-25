@@ -1,0 +1,2 @@
+sql/new/010_product_table.sql
+sql/new/employe_table.sql
