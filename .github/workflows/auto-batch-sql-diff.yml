@@ -1,0 +1,85 @@
+name: Auto-batch SQL (diff-based)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  RELEASES_DIR: releases/sql
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find last batch commit (most recent change in releases/sql)
+        id: lastbatch
+        run: |
+          mkdir -p "$RELEASES_DIR"
+          LAST_BATCH_COMMIT=$(git log -1 --format=%H -- "$RELEASES_DIR" || true)
+          echo "last=$LAST_BATCH_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Determine changed .sql files since last batch
+        id: changed
+        run: |
+          if [ -n "${{ steps.lastbatch.outputs.last }}" ]; then
+            git diff --name-only ${{ steps.lastbatch.outputs.last }}..HEAD -- '**/*.sql' | sort > changed.txt
+          else
+            # No prior batch: treat all tracked .sql as latest
+            git ls-files '**/*.sql' | sort > changed.txt
+          fi
+          echo "Changed files:"; cat changed.txt || true
+
+      - name: Fail if nothing to batch
+        run: |
+          if ! [ -s changed.txt ]; then
+            echo "No changed .sql files since last batch."; exit 1
+          fi
+
+      - name: Determine next batch number
+        id: next
+        run: |
+          LAST=$(ls "$RELEASES_DIR" 2>/dev/null | sed -n 's/^\([0-9][0-9][0-9]\)_.*/\1/p' | sort -n | tail -1)
+          if [ -z "$LAST" ]; then NEXT=1; else NEXT=$((10#$LAST + 1)); fi
+          printf "num=%03d\n" "$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Create batch folder and COPY changed files (preserve paths)
+        id: batch
+        run: |
+          TS=$(date +%Y%m%d_%H%M)
+          BATCH_NAME="${{ steps.next.outputs.num }}_${TS}"
+          BATCH_DIR="$RELEASES_DIR/$BATCH_NAME"
+          mkdir -p "$BATCH_DIR"
+          while IFS= read -r f; do
+            case "$f" in
+              $RELEASES_DIR/*) continue ;;
+            esac
+            mkdir -p "$BATCH_DIR/$(dirname "$f")"
+            cp "$f" "$BATCH_DIR/$f"
+          done < changed.txt
+          echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "dir=$BATCH_DIR"   >> "$GITHUB_OUTPUT"
+          echo "Created $BATCH_DIR with:"; find "$BATCH_DIR" -type f -name '*.sql' | sort
+
+      - name: Open Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }}"
+          branch: "batch/${{ steps.batch.outputs.name }}"
+          base: main
+          title: "SQL Batch ${{ steps.batch.outputs.name }}"
+          body: |
+            Auto-generated from changed .sql files since the last batch.
+            Files copied into `${{ steps.batch.outputs.dir }}`.
+          labels: sql
+          delete-branch: true
+
