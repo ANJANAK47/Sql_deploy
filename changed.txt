@@ -1,1 +1,1 @@
-sql/new/010_product_table.sql
+sql/new/query_tab.sql
