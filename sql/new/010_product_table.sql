@@ -1,8 +1,8 @@
 use mydb
 create table product(
 id int NOT NULL AUTO_INCREMENT PRIMARY KEY,
-name varchar(20),
-description varchar(20),
+name varchar(47),
+description varchar(25),
 price int
 )
 
