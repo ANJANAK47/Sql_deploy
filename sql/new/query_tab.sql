@@ -5,7 +5,7 @@ id int primary key,
 name varchar(50),
 description varchar(10),
 price double);
-
+-- insert new one
 select*from productbatch
 -- Insert first product
 INSERT INTO productbatch1 (id, name, description, price)
