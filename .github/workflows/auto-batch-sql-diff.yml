@@ -1,22 +1,15 @@
-name: Auto-batch SQL (diff-based)
+name: Auto-batch SQL (diff-based with global DDL/DML numbering)
 
 on:
-  workflow_dispatch: 
-    inputs:
-      environment:
-        required: true
-        default: 'main'
-        type: choice
-        options:
-          -develop
-          -stage
-          -main
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
   pull-requests: write
 
-# Prevent two runs from racing the same next number
+# Make numbering safe (no race conditions)
 concurrency:
   group: auto-batch-numbering
   cancel-in-progress: false
@@ -64,41 +57,132 @@ jobs:
 
       - name: Determine next batch number
         if: steps.check.outputs.has_changes == 'true'
-        id: next
+        id: nextbatch
         run: |
           LAST=$(ls "$RELEASES_DIR" 2>/dev/null | sed -n 's/^\([0-9][0-9][0-9]\)_.*/\1/p' | sort -n | tail -1)
           if [ -z "$LAST" ]; then NEXT=1; else NEXT=$((10#$LAST + 1)); fi
           printf "num=%03d\n" "$NEXT" >> "$GITHUB_OUTPUT"
 
-      # Copy with FLAT layout; if you prefer to preserve subpaths,
-      # replace cp "$f" "$BATCH_DIR/$(basename "$f")" with:
-      # mkdir -p "$BATCH_DIR/$(dirname "$f")"; cp "$f" "$BATCH_DIR/$f"
-      - name: Create batch folder and COPY changed files (flat)
+      - name: Compute GLOBAL ddl/dml next numbers (scan all previous batches)
+        if: steps.check.outputs.has_changes == 'true'
+        id: globalnums
+        run: |
+          # Highest ddlN found so far
+          DDL_MAX=$(find "$RELEASES_DIR" -type f -name 'ddl*.sql' 2>/dev/null \
+            | sed -n 's/.*\/ddl\([0-9][0-9]*\)\.sql$/\1/p' | sort -n | tail -1)
+          [ -z "$DDL_MAX" ] && DDL_MAX=0
+          DDL_NEXT=$((DDL_MAX + 1))
+
+          # Highest dmlN found so far
+          DML_MAX=$(find "$RELEASES_DIR" -type f -name 'dml*.sql' 2>/dev/null \
+            | sed -n 's/.*\/dml\([0-9][0-9]*\)\.sql$/\1/p' | sort -n | tail -1)
+          [ -z "$DML_MAX" ] && DML_MAX=0
+          DML_NEXT=$((DML_MAX + 1))
+
+          echo "ddl_next=$DDL_NEXT" >> "$GITHUB_OUTPUT"
+          echo "dml_next=$DML_NEXT" >> "$GITHUB_OUTPUT"
+          echo "GLOBAL NEXTS -> DDL:$DDL_NEXT DML:$DML_NEXT"
+
+      - name: Create batch folder and classify files by MODIFIED LINES (DDL vs DML) with GLOBAL numbering
         if: steps.check.outputs.has_changes == 'true'
         id: batch
         run: |
+          set -euo pipefail
           TS=$(date +%Y%m%d_%H%M)
-          BATCH_NAME="${{ steps.next.outputs.num }}_${TS}"
+          BATCH_NAME="${{ steps.nextbatch.outputs.num }}_${TS}"
           BATCH_DIR="$RELEASES_DIR/$BATCH_NAME"
-          mkdir -p "$BATCH_DIR"
+          mkdir -p "$BATCH_DIR/ddl" "$BATCH_DIR/dml"
+
+          DDL_NEXT=${{ steps.globalnums.outputs.ddl_next }}
+          DML_NEXT=${{ steps.globalnums.outputs.dml_next }}
+
+          # Keyword patterns (case-insensitive)
+          DDL_RE='(CREATE|ALTER|DROP|TRUNCATE|RENAME|COMMENT|GRANT|REVOKE)\b'
+          DML_RE='(INSERT|UPDATE|DELETE|MERGE|UPSERT|REPLACE)\b'
+
+          process_file() {
+            local f="$1"
+            local has_ddl=0
+            local has_dml=0
+
+            if [ -n "${{ steps.lastbatch.outputs.last }}" ]; then
+              # Get ADDED/MODIFIED lines for this file since last batch
+              git diff "${{ steps.lastbatch.outputs.last }}"..HEAD -U0 -- "$f" \
+                | sed -n '/^@@/,$p' \
+                | grep -E '^\+' | grep -Ev '^\+\+\+' > /tmp/lines.txt || true
+
+              if grep -Ei "$DDL_RE" /tmp/lines.txt >/dev/null 2>&1; then has_ddl=1; fi
+              if grep -Ei "$DML_RE" /tmp/lines.txt >/dev/null 2>&1; then has_dml=1; fi
+            else
+              # First batch: classify by entire file content
+              if grep -Ei "$DDL_RE" "$f" >/dev/null 2>&1; then has_ddl=1; fi
+              if grep -Ei "$DML_RE" "$f" >/devnull 2>&1; then has_dml=1; fi
+            fi
+
+            # If neither matched (e.g., only comments changed), skip
+            if [ $has_ddl -eq 0 ] && [ $has_dml -eq 0 ]; then
+              echo "Skip (no DDL/DML changes): $f"
+              return
+            fi
+
+            # Copy the FULL script into the right subfolder(s) with GLOBAL numbers
+            if [ $has_ddl -eq 1 ]; then
+              cp "$f" "$BATCH_DIR/ddl/ddl${DDL_NEXT}.sql"
+              echo "  -> DDL  ddl${DDL_NEXT}.sql  ($f)"
+              DDL_NEXT=$((DDL_NEXT+1))
+            fi
+            if [ $has_dml -eq 1 ]; then
+              cp "$f" "$BATCH_DIR/dml/dml${DML_NEXT}.sql"
+              echo "  -> DML  dml${DML_NEXT}.sql  ($f)"
+              DML_NEXT=$((DML_NEXT+1))
+            fi
+          }
+
           while IFS= read -r f; do
             [ -z "$f" ] && continue
-            cp "$f" "$BATCH_DIR/$(basename "$f")"
+            [ ! -f "$f" ] && continue
+            process_file "$f"
           done < changed.txt
+
+          # Persist the final counters so Open PR step can commit them
           echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
           echo "dir=$BATCH_DIR"   >> "$GITHUB_OUTPUT"
-          echo "Created $BATCH_DIR:"; ls -1 "$BATCH_DIR" || true
+
+          echo "Batch created at: $BATCH_DIR"
+          echo "Contents:"
+          find "$BATCH_DIR" -type f -name '*.sql' | sort || true
+
+      - name: Check if batch actually has files (otherwise no-op)
+        id: hasfiles
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          COUNT=$(find "${{ steps.batch.outputs.dir }}" -type f -name '*.sql' | wc -l | xargs)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "no_files=true" >> "$GITHUB_OUTPUT"
+            echo "No DDL/DML changes detected in modified lines; nothing to batch."
+          else
+            echo "no_files=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open Pull Request
-        if: steps.check.outputs.has_changes == 'true'
+        if: steps.check.outputs.has_changes == 'true' && steps.hasfiles.outputs.no_files == 'false'
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }}"
+          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }} (global DDL/DML numbering)"
           branch: "batch/${{ steps.batch.outputs.name }}"
           base: main
-          title: "SQL Batch ${{ steps.batch.outputs.name }}"
+          title: "SQL Batch ${{ steps.batch.outputs.name }} (DDL/DML)"
           body: |
-            Auto-generated from changed .sql files since the last batch.
-            Files copied into `${{ steps.batch.outputs.dir }}`.
+            Auto-generated batch **${{ steps.batch.outputs.name }}**.
+
+            - Global numbering for DDL and DML continues across batches
+            - Classified by **modified lines** since last batch:
+              - DDL keywords: CREATE, ALTER, DROP, TRUNCATE, RENAME, COMMENT, GRANT, REVOKE
+              - DML keywords: INSERT, UPDATE, DELETE, MERGE, UPSERT, REPLACE
+            - Files are copied fully into:
+              - `${{ steps.batch.outputs.dir }}/ddl/ddlN.sql`
+              - `${{ steps.batch.outputs.dir }}/dml/dmlN.sql`
+
           labels: sql
           delete-branch: true
+
