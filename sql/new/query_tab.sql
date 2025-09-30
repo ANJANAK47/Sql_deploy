@@ -2,8 +2,8 @@ use mydb
 
 create table productbatch1(
 id int primary key,
-name varchar(30),
-description varchar(100),
+name varchar(50),
+description varchar(10),
 price double);
 
 select*from productbatch
