@@ -3,7 +3,17 @@ name: Auto-batch SQL (diff-based)
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: {}
+  workflow_dispatch: 
+    inputs:
+      environment:
+        description:'Deploy env'
+      required: true
+      default: 'prod'
+      type: choice
+      options:
+       -develop
+       -stage
+       -prod
 
 permissions:
   contents: write
