@@ -1,8 +1,12 @@
-name: Auto-batch SQL (concat changed ddl*/dml* with fixed filenames)
+name: Auto-batch SQL (lean)
 
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'sql/new/*.sql'      # only run when source files change
+    paths-ignore:
+      - 'releases/sql/**'    # avoid loops
   workflow_dispatch: {}
 
 permissions:
@@ -20,126 +24,71 @@ jobs:
   batch:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }   # enough for before..after diff
 
-      - name: Find last batch commit (most recent change in releases/sql)
-        id: lastbatch
-        run: |
-          mkdir -p "$RELEASES_DIR"
-          LAST_BATCH_COMMIT=$(git log -1 --format=%H -- "$RELEASES_DIR" || true)
-          echo "last=$LAST_BATCH_COMMIT" >> "$GITHUB_OUTPUT"
-
-      - name: Determine changed ddl*/dml* since last batch (in sql/new/)
-        id: changed
+      - name: Build batch (use run number; concat changed ddl/dml)
         run: |
           set -euo pipefail
-          if [ -n "${{ steps.lastbatch.outputs.last }}" ]; then
-            git diff --name-only "${{ steps.lastbatch.outputs.last }}"..HEAD -- \
-              'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort > changed.txt || true
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+            CHANGED=$(git ls-files 'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort || true)
           else
-            # First batch: treat all existing ddl*/dml* as changed
-            git ls-files 'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort > changed.txt || true
+            CHANGED=$(git diff --name-only "${BEFORE}" "${AFTER}" -- 'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort || true)
           fi
-          echo "Changed files:"; cat changed.txt || true
+          [ -z "${CHANGED}" ] && echo "No changes." && exit 0
+          echo "${CHANGED}"
 
-      - name: Anything to batch?
-        id: check
-        run: |
-          if ! [ -s changed.txt ]; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No ddl*/dml* changes."
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build batch (use GitHub run number; concat into ddl/ddl.sql and dml/dml.sql)
-        if: steps.check.outputs.has_changes == 'true'
-        id: batch
-        run: |
-          set -euo pipefail
-          TS=$(date +%Y%m%d_%H%M)
-
-          # Use GitHub's run number as the batch number (zero-padded)
           printf -v RUNPAD "%03d" "${GITHUB_RUN_NUMBER}"
-          BATCH_NAME="${RUNPAD}_${TS}"
-          BATCH_DIR="$RELEASES_DIR/$BATCH_NAME"
-          mkdir -p "$BATCH_DIR/ddl" "$BATCH_DIR/dml"
+          BATCH_DIR="${{ env.RELEASES_DIR }}/${RUNPAD}"
+          mkdir -p "${BATCH_DIR}/ddl" "${BATCH_DIR}/dml"
 
-          # Extract numbers of changed ddl/dml files safely (no-match friendly)
-          DDL_NUMS=$(
-            { grep -E '^sql/new/ddl[0-9]+\.sql$' changed.txt || true; } \
-            | sed -n 's#^sql/new/ddl\([0-9]\+\)\.sql$#\1#p' \
-            | sort -n \
-            | xargs
-          )
-
-          DML_NUMS=$(
-            { grep -E '^sql/new/dml[0-9]+\.sql$' changed.txt || true; } \
-            | sed -n 's#^sql/new/dml\([0-9]\+\)\.sql$#\1#p' \
-            | sort -n \
-            | xargs
-          )
+          # Helper to concat a class (ddl|dml)
+          concat_type () {
+            local kind="$1"; shift
+            local nums
+            nums=$(echo "${CHANGED}" | { grep -E "^sql/new/${kind}[0-9]+\.sql$" || true; } \
+                   | sed -n "s#^sql/new/${kind}\([0-9]\+\)\.sql$#\1#p" | sort -n | xargs || true)
+            [ -z "${nums}" ] && return 1
+            local out="${BATCH_DIR}/${kind}/${kind}.sql"
+            : > "${out}"
+            for n in ${nums}; do
+              local src="sql/new/${kind}${n}.sql"
+              [ -f "${src}" ] || continue
+              {
+                echo "-- ===== BEGIN ${kind}${n}.sql ====="
+                cat  "${src}"
+                echo
+                echo "-- ===== END ${kind}${n}.sql ====="
+                echo
+              } >> "${out}"
+            done
+            echo "Created ${out}"
+          }
 
           MADE=0
+          concat_type ddl && MADE=1 || true
+          concat_type dml && MADE=1 || true
+          [ "${MADE}" -eq 0 ] && echo "No valid ddl/dml after filtering." && exit 0
 
-          # If any ddl*.sql changed: concatenate into a single ddl/ddl.sql
-          if [ -n "${DDL_NUMS:-}" ]; then
-            OUT="$BATCH_DIR/ddl/ddl.sql"
-            : > "$OUT"
-            for n in $DDL_NUMS; do
-              SRC="sql/new/ddl${n}.sql"
-              [ -f "$SRC" ] || continue
-              echo "-- ===== BEGIN ddl${n}.sql =====" >> "$OUT"
-              cat "$SRC" >> "$OUT"
-              echo -e "\n-- ===== END ddl${n}.sql =====\n" >> "$OUT"
-            done
-            echo "Created $OUT"
-            MADE=1
-          fi
+          echo "BATCH_DIR=${BATCH_DIR}" >> "$GITHUB_ENV"
+          echo "MADE=1" >> "$GITHUB_ENV"
+          find "${BATCH_DIR}" -type f -name '*.sql' | sort
 
-          # If any dml*.sql changed: concatenate into a single dml/dml.sql
-          if [ -n "${DML_NUMS:-}" ]; then
-            OUT="$BATCH_DIR/dml/dml.sql"
-            : > "$OUT"
-            for n in $DML_NUMS; do
-              SRC="sql/new/dml${n}.sql"
-              [ -f "$SRC" ] || continue
-              echo "-- ===== BEGIN dml${n}.sql =====" >> "$OUT"
-              cat "$SRC" >> "$OUT"
-              echo -e "\n-- ===== END dml${n}.sql =====\n" >> "$OUT"
-            done
-            echo "Created $OUT"
-            MADE=1
-          fi
-
-          echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
-          echo "dir=$BATCH_DIR"   >> "$GITHUB_OUTPUT"
-          echo "made=$MADE"       >> "$GITHUB_OUTPUT"
-
-          if [ "$MADE" -eq 1 ]; then
-            echo "Batch contents:"
-            find "$BATCH_DIR" -type f -name '*.sql' | sort
-          else
-            echo "No ddl*/dml* changed after filtering."
-          fi
-
-      - name: Open Pull Request
-        if: steps.batch.outputs.made == '1'
+      - name: Create Pull Request
+        if: env.MADE == '1'
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }} (ddl/ddl.sql & dml/dml.sql)"
-          branch: "batch/${{ steps.batch.outputs.name }}"
+          commit-message: "[skip ci] feat(sql): batch ${GITHUB_RUN_NUMBER}"
+          branch: "batch/${GITHUB_RUN_NUMBER}"
           base: main
-          title: "SQL Batch ${{ steps.batch.outputs.name }} (fixed ddl/dml files)"
+          title: "SQL Batch ${GITHUB_RUN_NUMBER}"
           body: |
-            This batch concatenates **changed** `sql/new/ddlN.sql` into `ddl/ddl.sql`
-            and `sql/new/dmlN.sql` into `dml/dml.sql`, in numeric order, within:
-            `${{ steps.batch.outputs.dir }}`.
-
-            - Batch folder uses GitHub **run number**: `${{ steps.batch.outputs.name }}`
-            - No per-file numbering inside the batch (fixed names: `ddl.sql`, `dml.sql`)
+            Batch **${GITHUB_RUN_NUMBER}** created from changed `sql/new/ddlN.sql` / `dmlN.sql`.
+            Concatenated into:
+            - `${{ env.BATCH_DIR }}/ddl/ddl.sql` (if any DDL changed)
+            - `${{ env.BATCH_DIR }}/dml/dml.sql` (if any DML changed)
           labels: sql
           delete-branch: true

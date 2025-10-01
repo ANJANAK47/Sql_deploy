@@ -3,6 +3,6 @@ create table users(
 CREATE TABLE users (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(101) not null,
-  email VARCHAR(180) UNIQUE
+  email VARCHAR(170) UNIQUE
 );
 
