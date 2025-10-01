@@ -43,8 +43,7 @@ jobs:
             # First batch: treat all existing ddl*/dml* as changed
             git ls-files 'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort > changed.txt || true
           fi
-          echo "Changed files:"
-          cat changed.txt || true
+          echo "Changed files:"; cat changed.txt || true
 
       - name: Anything to batch?
         id: check
@@ -55,14 +54,6 @@ jobs:
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Determine next batch number
-        if: steps.check.outputs.has_changes == 'true'
-        id: nextbatch
-        run: |
-          LAST=$(ls "$RELEASES_DIR" 2>/dev/null | sed -n 's/^\([0-9][0-9][0-9]\)_.*/\1/p' | sort -n | tail -1)
-          if [ -z "$LAST" ]; then NEXT=1; else NEXT=$((10#$LAST + 1)); fi
-          printf "num=%03d\n" "$NEXT" >> "$GITHUB_OUTPUT"
 
       - name: Compute GLOBAL ddl/dml next numbers
         if: steps.check.outputs.has_changes == 'true'
@@ -78,13 +69,16 @@ jobs:
           [ -z "$DML_MAX" ] && DML_MAX=0
           echo "dml_next=$((DML_MAX+1))" >> "$GITHUB_OUTPUT"
 
-      - name: Build batch (concat changed ddl*/dml* in numeric order)
+      - name: Build batch (use GitHub run number for folder; concat ddl*/dml* in numeric order)
         if: steps.check.outputs.has_changes == 'true'
         id: batch
         run: |
           set -euo pipefail
           TS=$(date +%Y%m%d_%H%M)
-          BATCH_NAME="${{ steps.nextbatch.outputs.num }}_${TS}"
+
+          # Use GitHub's run number as the batch number (zero-padded)
+          printf -v RUNPAD "%03d" "${GITHUB_RUN_NUMBER}"
+          BATCH_NAME="${RUNPAD}_${TS}"
           BATCH_DIR="$RELEASES_DIR/$BATCH_NAME"
           mkdir -p "$BATCH_DIR/ddl" "$BATCH_DIR/dml"
 
@@ -162,8 +156,6 @@ jobs:
             - DDL → `${{ steps.batch.outputs.dir }}/ddl/ddl<next>.sql` (changed ddl files in numeric order)
             - DML → `${{ steps.batch.outputs.dir }}/dml/dml<next>.sql` (changed dml files in numeric order)
 
-            Examples:
-            - If only `ddl1.sql` changed → new ddl file contains only ddl1
-            - If `ddl1.sql` and `ddl2.sql` changed → new ddl file contains ddl1 first, then ddl2
+            Batch folder uses the GitHub **run number**: `${{ steps.batch.outputs.name }}`.
           labels: sql
           delete-branch: true
