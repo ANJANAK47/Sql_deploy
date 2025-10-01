@@ -1,4 +1,4 @@
 sql/new/ddl1.sql
+sql/new/ddl2.sql
 sql/new/dml1.sql
-sql/new/employe_table.sql
-sql/new/query_tab.sql
+sql/new/dml2.sql
