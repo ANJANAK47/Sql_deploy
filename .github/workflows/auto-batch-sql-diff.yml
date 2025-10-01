@@ -5,8 +5,6 @@ on:
     branches: [ main ]
     paths:
       - 'sql/new/*.sql'      # only run when source files change
-    paths-ignore:
-      - 'releases/sql/**'    # avoid loops
   workflow_dispatch: {}
 
 permissions:
@@ -45,9 +43,9 @@ jobs:
           BATCH_DIR="${{ env.RELEASES_DIR }}/${RUNPAD}"
           mkdir -p "${BATCH_DIR}/ddl" "${BATCH_DIR}/dml"
 
-          # Helper to concat a class (ddl|dml)
+          # helper: concat one type (ddl|dml)
           concat_type () {
-            local kind="$1"; shift
+            local kind="$1"
             local nums
             nums=$(echo "${CHANGED}" | { grep -E "^sql/new/${kind}[0-9]+\.sql$" || true; } \
                    | sed -n "s#^sql/new/${kind}\([0-9]\+\)\.sql$#\1#p" | sort -n | xargs || true)
