@@ -43,7 +43,8 @@ jobs:
             # First batch: treat all existing ddl*/dml* as changed
             git ls-files 'sql/new/ddl*.sql' 'sql/new/dml*.sql' | sort > changed.txt || true
           fi
-          echo "Changed files:"; cat changed.txt || true
+          echo "Changed files:"
+          cat changed.txt || true
 
       - name: Anything to batch?
         id: check
@@ -90,15 +91,24 @@ jobs:
           DDL_NEXT=${{ steps.globalnums.outputs.ddl_next }}
           DML_NEXT=${{ steps.globalnums.outputs.dml_next }}
 
-          # Resolve changed ddl numbers (e.g., ddl1.sql -> 1), sort numeric
-          DDL_NUMS=$(grep -E '^sql/new/ddl[0-9]+\.sql$' changed.txt \
-            | sed -n 's#^sql/new/ddl\([0-9]\+\)\.sql$#\1#p' | sort -n | tr '\n' ' ')
-          DML_NUMS=$(grep -E '^sql/new/dml[0-9]+\.sql$' changed.txt \
-            | sed -n 's#^sql/new/dml\([0-9]\+\)\.sql$#\1#p' | sort -n | tr '\n' ' ')
+          # Extract numbers of changed ddl/dml files safely (no-match friendly)
+          DDL_NUMS=$(
+            { grep -E '^sql/new/ddl[0-9]+\.sql$' changed.txt || true; } \
+            | sed -n 's#^sql/new/ddl\([0-9]\+\)\.sql$#\1#p' \
+            | sort -n \
+            | xargs
+          )
+
+          DML_NUMS=$(
+            { grep -E '^sql/new/dml[0-9]+\.sql$' changed.txt || true; } \
+            | sed -n 's#^sql/new/dml\([0-9]\+\)\.sql$#\1#p' \
+            | sort -n \
+            | xargs
+          )
 
           MADE=0
 
-          if [ -n "$DDL_NUMS" ]; then
+          if [ -n "${DDL_NUMS:-}" ]; then
             OUT="$BATCH_DIR/ddl/ddl${DDL_NEXT}.sql"
             : > "$OUT"
             for n in $DDL_NUMS; do
@@ -110,10 +120,9 @@ jobs:
             done
             echo "Created $OUT"
             MADE=1
-            DDL_NEXT=$((DDL_NEXT+1))
           fi
 
-          if [ -n "$DML_NUMS" ]; then
+          if [ -n "${DML_NUMS:-}" ]; then
             OUT="$BATCH_DIR/dml/dml${DML_NEXT}.sql"
             : > "$OUT"
             for n in $DML_NUMS; do
@@ -125,7 +134,6 @@ jobs:
             done
             echo "Created $OUT"
             MADE=1
-            DML_NEXT=$((DML_NEXT+1))
           fi
 
           echo "name=$BATCH_NAME" >> "$GITHUB_OUTPUT"
@@ -155,7 +163,7 @@ jobs:
             - DML → `${{ steps.batch.outputs.dir }}/dml/dml<next>.sql` (changed dml files in numeric order)
 
             Examples:
-            - If only `ddl1.sql` changed → `ddl3.sql` contains ddl1 (if previous max was 2)
-            - If `ddl1.sql` and `ddl2.sql` changed → `ddl4.sql` contains ddl1 first, then ddl2
+            - If only `ddl1.sql` changed → new ddl file contains only ddl1
+            - If `ddl1.sql` and `ddl2.sql` changed → new ddl file contains ddl1 first, then ddl2
           labels: sql
           delete-branch: true
