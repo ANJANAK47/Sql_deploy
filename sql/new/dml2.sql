@@ -5,7 +5,7 @@ INSERT INTO users (name, email) VALUES ('Anjani', 'a@example.com');
 SELECT id, name FROM users WHERE email LIKE '%@example.com';
 
 -- change rows
-UPDATE users SET name = 'Siva Anna' WHERE id = 1;
+UPDATE users SET name = 'Anjan' WHERE id = 1;
 
 -- remove rows (structure stays)
 DELETE FROM users WHERE id = 1;
