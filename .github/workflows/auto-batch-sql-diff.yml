@@ -1,4 +1,4 @@
-name: Auto-batch SQL (concat changed ddl*/dml* with global numbering)
+name: Auto-batch SQL (concat changed ddl*/dml* with fixed filenames)
 
 on:
   push:
@@ -55,21 +55,7 @@ jobs:
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Compute GLOBAL ddl/dml next numbers
-        if: steps.check.outputs.has_changes == 'true'
-        id: globalnums
-        run: |
-          DDL_MAX=$(find "$RELEASES_DIR" -type f -name 'ddl*.sql' 2>/dev/null \
-            | sed -n 's/.*\/ddl\([0-9][0-9]*\)\.sql$/\1/p' | sort -n | tail -1)
-          [ -z "$DDL_MAX" ] && DDL_MAX=0
-          echo "ddl_next=$((DDL_MAX+1))" >> "$GITHUB_OUTPUT"
-
-          DML_MAX=$(find "$RELEASES_DIR" -type f -name 'dml*.sql' 2>/dev/null \
-            | sed -n 's/.*\/dml\([0-9][0-9]*\)\.sql$/\1/p' | sort -n | tail -1)
-          [ -z "$DML_MAX" ] && DML_MAX=0
-          echo "dml_next=$((DML_MAX+1))" >> "$GITHUB_OUTPUT"
-
-      - name: Build batch (use GitHub run number for folder; concat ddl*/dml* in numeric order)
+      - name: Build batch (use GitHub run number; concat into ddl/ddl.sql and dml/dml.sql)
         if: steps.check.outputs.has_changes == 'true'
         id: batch
         run: |
@@ -81,9 +67,6 @@ jobs:
           BATCH_NAME="${RUNPAD}_${TS}"
           BATCH_DIR="$RELEASES_DIR/$BATCH_NAME"
           mkdir -p "$BATCH_DIR/ddl" "$BATCH_DIR/dml"
-
-          DDL_NEXT=${{ steps.globalnums.outputs.ddl_next }}
-          DML_NEXT=${{ steps.globalnums.outputs.dml_next }}
 
           # Extract numbers of changed ddl/dml files safely (no-match friendly)
           DDL_NUMS=$(
@@ -102,8 +85,9 @@ jobs:
 
           MADE=0
 
+          # If any ddl*.sql changed: concatenate into a single ddl/ddl.sql
           if [ -n "${DDL_NUMS:-}" ]; then
-            OUT="$BATCH_DIR/ddl/ddl${DDL_NEXT}.sql"
+            OUT="$BATCH_DIR/ddl/ddl.sql"
             : > "$OUT"
             for n in $DDL_NUMS; do
               SRC="sql/new/ddl${n}.sql"
@@ -116,8 +100,9 @@ jobs:
             MADE=1
           fi
 
+          # If any dml*.sql changed: concatenate into a single dml/dml.sql
           if [ -n "${DML_NUMS:-}" ]; then
-            OUT="$BATCH_DIR/dml/dml${DML_NEXT}.sql"
+            OUT="$BATCH_DIR/dml/dml.sql"
             : > "$OUT"
             for n in $DML_NUMS; do
               SRC="sql/new/dml${n}.sql"
@@ -145,17 +130,16 @@ jobs:
         if: steps.batch.outputs.made == '1'
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }} (concat changed ddl*/dml*)"
+          commit-message: "[skip ci] feat(sql): batch ${{ steps.batch.outputs.name }} (ddl/ddl.sql & dml/dml.sql)"
           branch: "batch/${{ steps.batch.outputs.name }}"
           base: main
-          title: "SQL Batch ${{ steps.batch.outputs.name }} (concat ddl/dml)"
+          title: "SQL Batch ${{ steps.batch.outputs.name }} (fixed ddl/dml files)"
           body: |
-            This batch concatenates **changed** `sql/new/ddlN.sql` and `sql/new/dmlN.sql`
-            into single files with **global numbering**:
+            This batch concatenates **changed** `sql/new/ddlN.sql` into `ddl/ddl.sql`
+            and `sql/new/dmlN.sql` into `dml/dml.sql`, in numeric order, within:
+            `${{ steps.batch.outputs.dir }}`.
 
-            - DDL → `${{ steps.batch.outputs.dir }}/ddl/ddl<next>.sql` (changed ddl files in numeric order)
-            - DML → `${{ steps.batch.outputs.dir }}/dml/dml<next>.sql` (changed dml files in numeric order)
-
-            Batch folder uses the GitHub **run number**: `${{ steps.batch.outputs.name }}`.
+            - Batch folder uses GitHub **run number**: `${{ steps.batch.outputs.name }}`
+            - No per-file numbering inside the batch (fixed names: `ddl.sql`, `dml.sql`)
           labels: sql
           delete-branch: true
