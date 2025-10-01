@@ -1,4 +1,1 @@
 sql/new/ddl1.sql
-sql/new/ddl2.sql
-sql/new/dml1.sql
-sql/new/dml2.sql
